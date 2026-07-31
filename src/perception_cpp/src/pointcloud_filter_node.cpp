@@ -5,6 +5,10 @@
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/voxel_grid.h>
+#include <unordered_map>
+#include <cstdint>
+#include <cmath>
+#include <functional>
 
 class PointCloudFilterNode : public rclcpp::Node{
     public:
@@ -49,6 +53,26 @@ class PointCloudFilterNode : public rclcpp::Node{
             
         }
     private:
+        struct CellStats{
+            float min_z;
+            float max_z;
+        };
+        struct CellIndex{
+            int x;
+            int y;
+
+            bool operator==(const CellIndex other) const{
+                return x == other.x && y == other.y;
+            }
+        };
+        struct CellIndexHash {
+            std::size_t operator()(const CellIndex& cell) const {
+                const std::size_t h1 = std::hash<int>{}(cell.x);
+                const std::size_t h2 = std::hash<int>{}(cell.y);
+
+                return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+            }
+        };
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr raw_cloud_sub_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground_pub_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
@@ -76,6 +100,7 @@ class PointCloudFilterNode : public rclcpp::Node{
             int obstacle_neighbor_radius = this->get_parameter("obstacle_neighbor_radius").as_int();
             int min_obstacle_neighbor_cells = this->get_parameter("min_obstacle_neighbor_cells").as_int();
 
+            //Voxel Grid
             pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_input(new pcl::PointCloud<pcl::PointXYZ>);
             pcl::fromROSMsg(*msg, *cloud_input);
             pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_downsampled(new pcl::PointCloud<pcl::PointXYZ>);
@@ -89,7 +114,39 @@ class PointCloudFilterNode : public rclcpp::Node{
                 voxel_filter.setLeafSize(voxel_leaf,voxel_leaf,voxel_leaf);
                 voxel_filter.filter(*cloud_downsampled);
             }
+
+            //2D Grid containing min and max z
+            if(grid_res <= 0){
+                RCLCPP_DEBUG(this->get_logger(), "Invalid grid resolution!");
+                return;
+            }
+
+            std::unordered_map<CellIndex, CellStats, CellIndexHash> height_cells;
+            height_cells.reserve(cloud_downsampled->points.size());
+
+            for(const auto& point : cloud_downsampled->points){
+                if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) continue;
+
+                CellIndex key;
+                key.x = static_cast<int>(std::floor(point.x / grid_res));
+                key.y = static_cast<int>(std::floor(point.y / grid_res));
+
+                if(!height_cells.count(key)){
+                    height_cells[key].min_z = point.z;
+                    height_cells[key].max_z = point.z;
+                    continue;
+                }
+                if(height_cells[key].min_z >= point.z){
+                    height_cells[key].min_z = point.z;
+                }
+                else if(height_cells[key].max_z <= point.z){
+                    height_cells[key].max_z = point.z;
+                }
+            }
+
+            
         }
+
         
 };
 
