@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <optional>
 
 class PointCloudFilterNode : public rclcpp::Node{
     public:
@@ -151,6 +152,7 @@ class PointCloudFilterNode : public rclcpp::Node{
             //Mask containing all cell which meet requirements:
             //vertical_range > vertical_range_thresh && ground_jump < ground_jump_thresh
             std::unordered_set<CellIndex, CellIndexHash> obstacle_cell_mask;
+            obstacle_cell_mask.reserve(height_cells.size());
 
             for(const auto& [index, stat] : height_cells){
                 float vertical_range = stat.max_z - stat.min_z;
@@ -172,9 +174,65 @@ class PointCloudFilterNode : public rclcpp::Node{
                 }
             }
 
+            //first step of classification (individual points)
+            pcl::PointCloud<pcl::PointXYZ>::Ptr ground_points(new pcl::PointCloud<pcl::PointXYZ>);
+            ground_points->points.reserve(cloud_downsampled->points.size());
+
+            std::unordered_map<CellIndex, std::vector<pcl::PointXYZ>, CellIndexHash> candidate_obstacle_points_by_cell;
+            candidate_obstacle_points_by_cell.reserve(height_cells.size());
+
+            std::unordered_set<CellIndex, CellIndexHash> current_obstacle_cells;
+             
+            for(const auto& point : cloud_downsampled->points){
+                if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) continue;
+
+                CellIndex index{
+                    static_cast<int>(std::floor(point.x /grid_res)),
+                    static_cast<int>(std::floor(point.y /grid_res))
+                };
+
+                std::optional<float> local_ground_z = findLocalGroundZ(height_cells, index);
+
+                if(!local_ground_z) continue;
+
+                const float dz = point.z - *local_ground_z;
+
+                bool in_obstacle_cell = (obstacle_cell_mask.find(index) != obstacle_cell_mask.end());
+                //hardcoded negative tolerance of 0.03 (3cm)
+                //e.g. point.z can be cause of sensor noise 
+                bool is_ground_like = (-0.03f <= dz) && (dz < height_thresh);
+
+                //aditional condition for dealing with 2 extreme cases:
+                //keeping all ground-like points: obstacles can be in ground cloud
+                //discarding all ground-like points in obstacle mask: losing ground points near obstacle
+                const bool keep_ground_in_obstacle_cell =
+                    !exclude_obstacle_cells_from_ground || 
+                    !in_obstacle_cell || 
+                    dz <= obstacle_cell_ground_keep_height;
+
+                bool is_obstacle_candidate = false;
+
+                if(is_ground_like){
+                    if(keep_ground_in_obstacle_cell){
+                        ground_points->points.push_back(point);
+                    }
+                }
+                else if(point.z < max_obstacle_z &&
+                    dz >= min_obstacle_height && 
+                    (in_obstacle_cell || dz >= strong_obstacle_height)){
+                    is_obstacle_candidate = true;
+                }
+                
+                if(is_obstacle_candidate){
+                    current_obstacle_cells.insert(index);
+                    candidate_obstacle_points_by_cell[index].push_back(point);
+                }
+            }
+            
             
         }
 
+        //Find Median of min_z of cells in given radius around given cell
         float findNeighborMedianMinZ(const std::unordered_map<CellIndex, CellStats, CellIndexHash>& height_cells, const CellIndex& index){
             int radius = 1; //add param later
 
@@ -200,6 +258,24 @@ class PointCloudFilterNode : public rclcpp::Node{
 
             return neighbors[median_index];
             
+        }
+
+        //Find min min_z in given radius around given cell
+        std::optional<float> findLocalGroundZ(const std::unordered_map<CellIndex, CellStats, CellIndexHash>& height_cells, const CellIndex& index){
+            int radius = 1; //add param later
+            std::optional<float> min_z;
+
+            for(int dx = -radius; dx <= radius; ++dx){
+                for(int dy = -radius; dy <= radius; ++dy){
+                    CellIndex neighbor{index.x + dx, index.y +dy};
+                    auto it = height_cells.find(neighbor);
+                    if(it == height_cells.end()) continue;
+
+                    if(!min_z || it->second.min_z < *min_z) min_z =  it->second.min_z;
+                }
+            }
+            return min_z;
+
         }
 
         
