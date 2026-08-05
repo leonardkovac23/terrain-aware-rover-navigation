@@ -228,7 +228,46 @@ class PointCloudFilterNode : public rclcpp::Node{
                     candidate_obstacle_points_by_cell[index].push_back(point);
                 }
             }
-            
+
+            //Spatial filter
+            std::unordered_set<CellIndex, CellIndexHash> filtered_obstacle_cells;
+            for(CellIndex index : current_obstacle_cells){
+                int neighbor_count = countObstacleNeighbors(current_obstacle_cells, index);
+                if (neighbor_count >= min_obstacle_neighbor_cells) filtered_obstacle_cells.insert(index);
+            }
+
+            pcl::PointCloud<pcl::PointXYZ>::Ptr obstacle_points(new pcl::PointCloud<pcl::PointXYZ>);
+            obstacle_points->points.reserve(cloud_downsampled->points.size());
+            for(const auto& [index, points]: candidate_obstacle_points_by_cell){
+                auto it = filtered_obstacle_cells.find(index);
+                if (it != filtered_obstacle_cells.end()){
+                    for(const auto& point : points){
+                        obstacle_points->points.push_back(point);
+                    }
+                }
+            }
+
+            //PCL metadata
+            ground_points->width = ground_points->points.size();
+            ground_points->height = 1;
+            ground_points->is_dense = true;
+
+            obstacle_points->width = obstacle_points->points.size();
+            obstacle_points->height = 1;
+            obstacle_points->is_dense = true;
+
+            //Publish
+            sensor_msgs::msg::PointCloud2 ground_msg;
+            sensor_msgs::msg::PointCloud2 obstacle_msg;
+
+            pcl::toROSMsg(*ground_points, ground_msg);
+            pcl::toROSMsg(*obstacle_points, obstacle_msg);
+
+            ground_msg.header = msg->header;
+            obstacle_msg.header = msg->header;
+
+            ground_pub_->publish(ground_msg);
+            obstacle_pub_->publish(obstacle_msg);
             
         }
 
@@ -276,6 +315,23 @@ class PointCloudFilterNode : public rclcpp::Node{
             }
             return min_z;
 
+        }
+
+        //Count how many neighbors of obstacle cell are also marked as obstacle
+        int countObstacleNeighbors(const std::unordered_set<CellIndex, CellIndexHash>& obstacle_cells, const CellIndex& index){
+            int radius = 1; //add param later
+            int count = 0;
+
+            for(int dx = -radius; dx <= radius; ++dx){
+                for(int dy = -radius; dy <= radius; ++dy){
+                    if(dx == 0 && dy == 0) continue;
+                    CellIndex neighbor{index.x +dx, index.y +dy};
+                    auto it = obstacle_cells.find(neighbor);
+                    if(it != obstacle_cells.end()) count++; 
+                }
+            }
+
+            return count;
         }
 
         
