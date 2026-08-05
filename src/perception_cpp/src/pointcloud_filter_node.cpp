@@ -41,7 +41,7 @@ class PointCloudFilterNode : public rclcpp::Node{
             this->declare_parameter("plane_refinement_max_residual", 0.08);
             this->declare_parameter("plane_refinement_max_slope", 0.45);
             this->declare_parameter("plane_refine_ground_like_obstacle_cells", true);
-            // Spatial filter for obstacle candidates.
+            // Spatial filter for obstacle candidates
             this->declare_parameter("obstacle_neighbor_radius", 1);
             this->declare_parameter("min_obstacle_neighbor_cells", 1);
 
