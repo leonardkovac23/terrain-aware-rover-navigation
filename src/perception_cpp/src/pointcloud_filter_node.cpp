@@ -1,10 +1,3 @@
-#include <memory>
-#include "rclcpp/rclcpp.hpp"
-#include "sensor_msgs/msg/point_cloud2.hpp"
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <pcl/filters/voxel_grid.h>
 #include <unordered_map>
 #include <cstdint>
 #include <cmath>
@@ -13,35 +6,46 @@
 #include <vector>
 #include <algorithm>
 #include <optional>
+#include <memory>
+
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
+
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/filters/voxel_grid.h>
 
 class PointCloudFilterNode : public rclcpp::Node{
     public:
         PointCloudFilterNode() : rclcpp::Node("pointcloud_filter_node"){
-            // Voxel downsampling
-            this->declare_parameter("voxel_leaf", 0.05);
-            // 2D grid and local ground estimation
+            //Voxel downsampling
+            this->declare_parameter("voxel_leaf", 0.03);
+            //2D grid and local ground estimation
             this->declare_parameter("grid_res", 0.15);
             this->declare_parameter("neighbor_radius", 1);
-            // Basic point classification
-            this->declare_parameter("height_thresh", 0.16);
+            //Basic point classification
+            this->declare_parameter("height_thresh", 0.14); //0.16
             this->declare_parameter("max_obstacle_z", 2.0);
-            this->declare_parameter("min_obstacle_height", 0.30);
+            this->declare_parameter("min_obstacle_height", 0.0);
             this->declare_parameter("strong_obstacle_height", 0.50);
-            // Obstacle-cell mask
+            //Obstacle-cell mask
             this->declare_parameter("vertical_range_thresh", 0.4);
             this->declare_parameter("ground_jump_thresh", 0.18);
             this->declare_parameter("obstacle_cell_inflation", 1);
-            // Ground points inside cells that also contain obstacles
+            //Ground points inside cells that also contain obstacles
             this->declare_parameter("exclude_obstacle_cells_from_ground", true);
             this->declare_parameter("obstacle_cell_ground_keep_height", 0.06);
-            // Local plane refinement
+            //Local plane refinement - currently not used
+            /*
             this->declare_parameter("enable_plane_refinement", true);
             this->declare_parameter("plane_refinement_radius", 2);
             this->declare_parameter("plane_refinement_min_points", 5); 
             this->declare_parameter("plane_refinement_max_residual", 0.08);
             this->declare_parameter("plane_refinement_max_slope", 0.45);
-            this->declare_parameter("plane_refine_ground_like_obstacle_cells", true);
-            // Spatial filter for obstacle candidates
+            this->declare_parameter("plane_refine_ground_like_obstacle_cells", true);            
+            */
+            //Spatial filter for obstacle candidates
             this->declare_parameter("obstacle_neighbor_radius", 1);
             this->declare_parameter("min_obstacle_neighbor_cells", 1);
 
@@ -50,7 +54,7 @@ class PointCloudFilterNode : public rclcpp::Node{
                 "/scan/points",
                 10,
                 [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg){this->pointCloudCallback(msg);}
-                );
+            );
             //publishers 
             ground_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/points_ground",10);
             obstacle_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/points_obstacles",10);
