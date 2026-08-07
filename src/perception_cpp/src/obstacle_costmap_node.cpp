@@ -1,5 +1,7 @@
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <cmath>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -111,17 +113,64 @@ class ObstacleCostmapNode : public rclcpp::Node{
 
             std::unordered_map<CellIndex, int, CellIndexHash> point_counts_by_cell;
 
-            for(const auto& point : cloud_input->points){
-                int ix = static_cast<int>(std::floor(point.x - origin_x) / grid_resolution);
-                int iy = static_cast<int>(std::floor(point.y - origin_y) / grid_resolution);
-
-                //Out of bounds check
-                int width_cells = static_cast<int>(std::round(map_width / grid_resolution));
-                int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
-
-                if(ix < 0 || ix > width_cells || iy <0 || iy >= height_cells) continue;
+            if(grid_resolution <= 0.0) {
+                RCLCPP_WARN(this->get_logger(), "Invalid grid_resolution");
+                return;
             }
 
+            int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
+            int width_cells = static_cast<int>(std::round(map_width / grid_resolution));
+            const double min_range_sq = min_insert_range*min_insert_range;
+            const double max_range_sq = max_insert_range*max_insert_range;
 
+            for(const auto& point : cloud_input->points){
+                if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) continue;
+
+                if(point.z < min_target_z || point.z > max_target_z) continue;
+                
+                const double range_sq = point.x*point.x + point.y*point.y + point.z*point.z;
+
+                if(range_sq < min_range_sq || range_sq > max_range_sq) continue;
+
+
+                int ix = static_cast<int>(std::floor((point.x - origin_x) / grid_resolution));
+                int iy = static_cast<int>(std::floor((point.y - origin_y) / grid_resolution));
+                //Out of bounds check
+                if(ix < 0 || ix >= width_cells || iy <0 || iy >= height_cells) continue;
+
+                CellIndex index{ix, iy};
+                point_counts_by_cell[index]++;
+            }
+
+            std::unordered_set<CellIndex, CellIndexHash> obstacle_candidates;
+            for(const auto& [index, count] : point_counts_by_cell){
+                if(count >= min_points_per_cell) obstacle_candidates.insert(index);
+            }
+
+            for(const auto& index : obstacle_candidates){
+                if(countCandidateNeighbors(obstacle_candidates, index, obstacle_neighbor_radius) >= min_obstacle_neighbor_cells){
+                    hit_counts_[index] += hit_increment;
+
+                    if(hit_counts_[index] > max_hits_per_cell){
+                        hit_counts_[index] = max_hits_per_cell;
+                    }
+                }
+            }
+        }
+
+        //Count how many neighbors of obstacle cell are also marked as obstacle
+        int countCandidateNeighbors(const std::unordered_set<CellIndex, CellIndexHash>& obstacle_candidates, const CellIndex& index, int radius){
+            int count = 0;
+
+            for(int dx = -radius; dx <= radius; ++dx){
+                for(int dy = -radius; dy <= radius; ++dy){
+                    if(dx == 0 && dy == 0) continue;
+                    CellIndex neighbor{index.x +dx, index.y +dy};
+                    auto it = obstacle_candidates.find(neighbor);
+                    if(it != obstacle_candidates.end()) count++; 
+                }
+            }
+
+            return count;
         }
 };
