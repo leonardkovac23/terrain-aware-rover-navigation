@@ -36,15 +36,6 @@ class PointCloudFilterNode : public rclcpp::Node{
             //Ground points inside cells that also contain obstacles
             this->declare_parameter("exclude_obstacle_cells_from_ground", true);
             this->declare_parameter("obstacle_cell_ground_keep_height", 0.06);
-            //Local plane refinement - currently not used
-            /*
-            this->declare_parameter("enable_plane_refinement", true);
-            this->declare_parameter("plane_refinement_radius", 2);
-            this->declare_parameter("plane_refinement_min_points", 5); 
-            this->declare_parameter("plane_refinement_max_residual", 0.08);
-            this->declare_parameter("plane_refinement_max_slope", 0.45);
-            this->declare_parameter("plane_refine_ground_like_obstacle_cells", true);            
-            */
             //Spatial filter for obstacle candidates
             this->declare_parameter("obstacle_neighbor_radius", 1);
             this->declare_parameter("min_obstacle_neighbor_cells", 1);
@@ -73,7 +64,7 @@ class PointCloudFilterNode : public rclcpp::Node{
                 return x == other.x && y == other.y;
             }
         };
-        struct CellIndexHash {
+        struct CellIndexHash{
             std::size_t operator()(const CellIndex& cell) const {
                 const std::size_t h1 = std::hash<int>{}(cell.x);
                 const std::size_t h2 = std::hash<int>{}(cell.y);
@@ -81,6 +72,7 @@ class PointCloudFilterNode : public rclcpp::Node{
                 return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
             }
         };
+
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr raw_cloud_sub_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground_pub_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
@@ -99,12 +91,6 @@ class PointCloudFilterNode : public rclcpp::Node{
             double strong_obstacle_height = this->get_parameter("strong_obstacle_height").as_double();
             bool exclude_obstacle_cells_from_ground = this->get_parameter("exclude_obstacle_cells_from_ground").as_bool();
             double obstacle_cell_ground_keep_height = this->get_parameter("obstacle_cell_ground_keep_height").as_double();
-            bool enable_plane_refinement = this->get_parameter("enable_plane_refinement").as_bool();
-            int plane_refinement_radius = this->get_parameter("plane_refinement_radius").as_int();
-            int plane_refinement_min_points = this->get_parameter("plane_refinement_min_points").as_int();
-            double plane_refinement_max_residual = this->get_parameter("plane_refinement_max_residual").as_double();
-            double plane_refinement_max_slope = this->get_parameter("plane_refinement_max_slope").as_double();
-            bool plane_refine_ground_like_obstacle_cells = this->get_parameter("plane_refine_ground_like_obstacle_cells").as_bool();
             int obstacle_neighbor_radius = this->get_parameter("obstacle_neighbor_radius").as_int();
             int min_obstacle_neighbor_cells = this->get_parameter("min_obstacle_neighbor_cells").as_int();
 

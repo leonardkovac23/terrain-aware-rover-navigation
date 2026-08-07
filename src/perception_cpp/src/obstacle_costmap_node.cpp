@@ -1,8 +1,14 @@
+#include <string>
+#include <unordered_map>
+
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "std_msgs/msg/header.hpp"
-#include <string>
+
+#include "pcl/point_cloud.h"
+#include "pcl/point_types.h"
+#include "pcl_conversions/pcl_conversions.h"
 
 class ObstacleCostmapNode : public rclcpp::Node{
     public:
@@ -53,6 +59,24 @@ class ObstacleCostmapNode : public rclcpp::Node{
             map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic,10);
         }
     private:
+        struct CellIndex{
+            int x;
+            int y;
+
+            bool operator==(const CellIndex& other) const noexcept{
+                return x == other.x && y == other.y;
+            }
+        };
+        struct CellIndexHash{
+            std::size_t operator()(const CellIndex& cell) const {
+                const std::size_t h1 = std::hash<int>{}(cell.x);
+                const std::size_t h2 = std::hash<int>{}(cell.y);
+
+                return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+            }
+        };
+        
+        std::unordered_map<CellIndex, int, CellIndexHash> hit_counts_;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_points_sub_;
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
 
@@ -81,6 +105,22 @@ class ObstacleCostmapNode : public rclcpp::Node{
             double inflation_radius = this->get_parameter("inflation_radius").as_double();
             double publish_rate = this->get_parameter("publish_rate").as_double();
             double tf_lookup_timeout = this->get_parameter("tf_lookup_timeout").as_double();
+
+            pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_input(new pcl::PointCloud<pcl::PointXYZ>);
+            pcl::fromROSMsg(*msg, *cloud_input);
+
+            std::unordered_map<CellIndex, int, CellIndexHash> point_counts_by_cell;
+
+            for(const auto& point : cloud_input->points){
+                int ix = static_cast<int>(std::floor(point.x - origin_x) / grid_resolution);
+                int iy = static_cast<int>(std::floor(point.y - origin_y) / grid_resolution);
+
+                //Out of bounds check
+                int width_cells = static_cast<int>(std::round(map_width / grid_resolution));
+                int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
+
+                if(ix < 0 || ix > width_cells || iy <0 || iy >= height_cells) continue;
+            }
 
 
         }
