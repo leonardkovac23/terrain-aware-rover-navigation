@@ -108,15 +108,21 @@ class ObstacleCostmapNode : public rclcpp::Node{
             double publish_rate = this->get_parameter("publish_rate").as_double();
             double tf_lookup_timeout = this->get_parameter("tf_lookup_timeout").as_double();
 
-            pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_input(new pcl::PointCloud<pcl::PointXYZ>);
-            pcl::fromROSMsg(*msg, *cloud_input);
-
-            std::unordered_map<CellIndex, int, CellIndexHash> point_counts_by_cell;
+            if(msg->header.frame_id == ""){
+                RCLCPP_WARN(this->get_logger(), "Empty frame id");
+                return;
+            }
 
             if(grid_resolution <= 0.0) {
                 RCLCPP_WARN(this->get_logger(), "Invalid grid_resolution");
                 return;
             }
+
+            pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_input(new pcl::PointCloud<pcl::PointXYZ>);
+            pcl::fromROSMsg(*msg, *cloud_input);
+
+            std::unordered_map<CellIndex, int, CellIndexHash> point_counts_by_cell;
+            
 
             int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
             int width_cells = static_cast<int>(std::round(map_width / grid_resolution));
@@ -130,8 +136,8 @@ class ObstacleCostmapNode : public rclcpp::Node{
                 
                 const double range_sq = point.x*point.x + point.y*point.y + point.z*point.z;
 
+                //range filter
                 if(range_sq < min_range_sq || range_sq > max_range_sq) continue;
-
 
                 int ix = static_cast<int>(std::floor((point.x - origin_x) / grid_resolution));
                 int iy = static_cast<int>(std::floor((point.y - origin_y) / grid_resolution));
@@ -147,6 +153,7 @@ class ObstacleCostmapNode : public rclcpp::Node{
                 if(count >= min_points_per_cell) obstacle_candidates.insert(index);
             }
 
+            //Spatial filter
             for(const auto& index : obstacle_candidates){
                 if(countCandidateNeighbors(obstacle_candidates, index, obstacle_neighbor_radius) >= min_obstacle_neighbor_cells){
                     hit_counts_[index] += hit_increment;
