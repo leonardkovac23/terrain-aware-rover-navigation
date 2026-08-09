@@ -2,15 +2,23 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <cmath>
+#include <memory>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "std_msgs/msg/header.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 
 #include "pcl/point_cloud.h"
 #include "pcl/point_types.h"
 #include "pcl_conversions/pcl_conversions.h"
+
+#include "tf2/exceptions.h"
+#include "tf2/LinearMath/Transform.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 
 class ObstacleCostmapNode : public rclcpp::Node{
     public:
@@ -59,6 +67,10 @@ class ObstacleCostmapNode : public rclcpp::Node{
             );
             //publisher
             map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic,10);
+
+            //tf2 components
+            tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+            tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
         }
     private:
         struct CellIndex{
@@ -81,6 +93,9 @@ class ObstacleCostmapNode : public rclcpp::Node{
         std::unordered_map<CellIndex, int, CellIndexHash> hit_counts_;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_points_sub_;
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
+
+        std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+        std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
         void obstacleCostmapCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr msg){
             
@@ -135,7 +150,6 @@ class ObstacleCostmapNode : public rclcpp::Node{
                 if(point.z < min_target_z || point.z > max_target_z) continue;
                 
                 const double range_sq = point.x*point.x + point.y*point.y + point.z*point.z;
-
                 //range filter
                 if(range_sq < min_range_sq || range_sq > max_range_sq) continue;
 
