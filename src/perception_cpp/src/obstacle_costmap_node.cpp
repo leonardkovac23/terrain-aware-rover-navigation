@@ -3,6 +3,9 @@
 #include <unordered_set>
 #include <cmath>
 #include <memory>
+#include <vector>
+#include <chrono>
+#include <algorithm>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -53,7 +56,7 @@ class ObstacleCostmapNode : public rclcpp::Node{
             this->declare_parameter("free_cost", 0);
             this->declare_parameter("inflation_radius", 0.25);
             //Runtime behavior
-            this->declare_parameter("publish_rate", 2.0);
+            this->declare_parameter("publish_rate", 2.0); //Cant be changed during simulation
             this->declare_parameter("tf_lookup_timeout", 0.30);
 
             const std::string input_topic = this->get_parameter("input_topic").as_string();
@@ -67,6 +70,14 @@ class ObstacleCostmapNode : public rclcpp::Node{
             );
             //publisher
             map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic,10);
+            //timer
+            const double publish_rate = this->get_parameter("publish_rate").as_double();
+            const double timer_period = 1.0 / std::max(publish_rate, 0.1);
+
+            map_timer_ = this->create_wall_timer(
+                std::chrono::duration<double>(timer_period),
+                [this](){this->publishMap();}
+            );
 
             //tf2 components
             tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
@@ -93,6 +104,7 @@ class ObstacleCostmapNode : public rclcpp::Node{
         std::unordered_map<CellIndex, int, CellIndexHash> hit_counts_;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_points_sub_;
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
+        rclcpp::TimerBase::SharedPtr map_timer_;
 
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -110,28 +122,47 @@ class ObstacleCostmapNode : public rclcpp::Node{
             double min_target_z = this->get_parameter("min_target_z").as_double();
             double max_target_z = this->get_parameter("max_target_z").as_double();
             int hit_increment = this->get_parameter("hit_increment").as_int();
-            int min_hits_for_obstacle = this->get_parameter("min_hits_for_obstacle").as_int();
             int max_hits_per_cell = this->get_parameter("max_hits_per_cell").as_int();
-            bool enable_hit_decay = this->get_parameter("enable_hit_decay").as_bool();
-            int hit_decay_per_publish = this->get_parameter("hit_decay_per_publish").as_int();
             int min_points_per_cell = this->get_parameter("min_points_per_cell").as_int();
             int obstacle_neighbor_radius = this->get_parameter("obstacle_neighbor_radius").as_int();
             int min_obstacle_neighbor_cells = this->get_parameter("min_obstacle_neighbor_cells").as_int();
-            int obstacle_cost = this->get_parameter("obstacle_cost").as_int();
-            int free_cost = this->get_parameter("free_cost").as_int();
-            double inflation_radius = this->get_parameter("inflation_radius").as_double();
-            double publish_rate = this->get_parameter("publish_rate").as_double();
             double tf_lookup_timeout = this->get_parameter("tf_lookup_timeout").as_double();
 
             if(msg->header.frame_id == ""){
                 RCLCPP_WARN(this->get_logger(), "Empty frame id");
                 return;
             }
+            const std::string source_frame = msg->header.frame_id;
 
             if(grid_resolution <= 0.0) {
                 RCLCPP_WARN(this->get_logger(), "Invalid grid_resolution");
                 return;
             }
+
+            geometry_msgs::msg::TransformStamped transform_stamped;
+
+            try{
+                transform_stamped = tf_buffer_->lookupTransform(
+                    target_frame, source_frame,
+                    rclcpp::Time(msg->header.stamp),
+                    rclcpp::Duration::from_seconds(tf_lookup_timeout)
+                );
+            }
+            catch(const tf2::TransformException& ex){
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "TF unavailable: %s <- %s: %s",
+                    target_frame.c_str(),
+                    source_frame.c_str(),
+                    ex.what()
+                );
+                return;
+            }
+
+            tf2::Transform source_to_target_transform;
+            tf2::fromMsg(transform_stamped.transform, source_to_target_transform);
+
+
 
             pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_input(new pcl::PointCloud<pcl::PointXYZ>);
             pcl::fromROSMsg(*msg, *cloud_input);
@@ -139,22 +170,31 @@ class ObstacleCostmapNode : public rclcpp::Node{
             std::unordered_map<CellIndex, int, CellIndexHash> point_counts_by_cell;
             
 
-            int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
             int width_cells = static_cast<int>(std::round(map_width / grid_resolution));
+            int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
+
             const double min_range_sq = min_insert_range*min_insert_range;
             const double max_range_sq = max_insert_range*max_insert_range;
 
             for(const auto& point : cloud_input->points){
                 if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) continue;
-
-                if(point.z < min_target_z || point.z > max_target_z) continue;
-                
-                const double range_sq = point.x*point.x + point.y*point.y + point.z*point.z;
                 //range filter
+                const double range_sq = point.x*point.x + point.y*point.y + point.z*point.z;
                 if(range_sq < min_range_sq || range_sq > max_range_sq) continue;
+                
+                //Apply transform to se point in map frame
+                const tf2::Vector3 point_source(point.x, point.y, point.z);
+                const tf2::Vector3 point_target = source_to_target_transform * point_source;
+                
+                const double x = point_target.x();
+                const double y = point_target.y();
+                const double z = point_target.z();
+                
+                if(z < min_target_z || z > max_target_z) continue;
 
-                int ix = static_cast<int>(std::floor((point.x - origin_x) / grid_resolution));
-                int iy = static_cast<int>(std::floor((point.y - origin_y) / grid_resolution));
+                int ix = static_cast<int>(std::floor((x - origin_x) / grid_resolution));
+                int iy = static_cast<int>(std::floor((y - origin_y) / grid_resolution));
+
                 //Out of bounds check
                 if(ix < 0 || ix >= width_cells || iy <0 || iy >= height_cells) continue;
 
@@ -179,6 +219,76 @@ class ObstacleCostmapNode : public rclcpp::Node{
             }
         }
 
+        void publishMap(){
+            std::string target_frame = this->get_parameter("target_frame").as_string();
+            double grid_resolution = this->get_parameter("grid_resolution").as_double();
+            double map_width = this->get_parameter("map_width").as_double();
+            double map_height = this->get_parameter("map_height").as_double();
+            double origin_x = this->get_parameter("origin_x").as_double();
+            double origin_y = this->get_parameter("origin_y").as_double();
+            int obstacle_cost = this->get_parameter("obstacle_cost").as_int();
+            int free_cost = this->get_parameter("free_cost").as_int();
+            double inflation_radius = this->get_parameter("inflation_radius").as_double();
+            int min_hits_for_obstacle = this->get_parameter("min_hits_for_obstacle").as_int();
+            bool enable_hit_decay = this->get_parameter("enable_hit_decay").as_bool();
+            int hit_decay_per_publish = this->get_parameter("hit_decay_per_publish").as_int();
+
+            if(grid_resolution <= 0){
+                RCLCPP_WARN(this->get_logger(), "Invalid grid_resolution");
+                return;
+            }
+
+            int width_cells = static_cast<int>(std::round(map_width / grid_resolution));
+            int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
+
+            std::vector<int8_t> data(width_cells * height_cells, free_cost);
+
+            for(const auto& [index, count] : this->hit_counts_){
+                if(count < min_hits_for_obstacle){
+                    continue;
+                }
+                else{
+                    int inflation_cells = static_cast<int>(std::ceil(inflation_radius / grid_resolution));
+                    
+                    for(int dx = -inflation_cells; dx <= inflation_cells; ++dx){
+                        for(int dy = -inflation_cells; dy <= inflation_cells; ++dy){
+                            if(dx*dx + dy*dy <= inflation_cells*inflation_cells){
+                                int inflated_x = index.x + dx;
+                                int inflated_y = index.y + dy;
+                                if(inflated_x < 0 ||
+                                    inflated_x >= width_cells || 
+                                    inflated_y < 0 || 
+                                    inflated_y >= height_cells
+                                )continue;
+                                
+                                int data_index = (inflated_y) * width_cells + (inflated_x);
+                                data[data_index] = obstacle_cost;
+                            }
+                        }
+                    }
+                }
+            }
+
+	        nav_msgs::msg::OccupancyGrid msg;
+        
+	        msg.header.stamp = this->get_clock()->now();
+	        msg.header.frame_id = target_frame;
+	        msg.info.map_load_time = this->get_clock()->now();
+	        msg.info.resolution = grid_resolution;
+	        msg.info.width = width_cells;
+	        msg.info.height = height_cells;
+	        msg.info.origin.position.x = origin_x;
+	        msg.info.origin.position.y = origin_y;
+	        msg.info.origin.position.z = 0.0;
+	        msg.info.origin.orientation.x = 0.0;
+	        msg.info.origin.orientation.y = 0.0;
+	        msg.info.origin.orientation.z = 0.0;
+	        msg.info.origin.orientation.w = 1.0;
+	        msg.data = data;
+
+	        map_pub_->publish(msg);
+        }
+
         //Count how many neighbors of obstacle cell are also marked as obstacle
         int countCandidateNeighbors(const std::unordered_set<CellIndex, CellIndexHash>& obstacle_candidates, const CellIndex& index, int radius){
             int count = 0;
@@ -195,3 +305,10 @@ class ObstacleCostmapNode : public rclcpp::Node{
             return count;
         }
 };
+
+int main(int argc, char ** argv){
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<ObstacleCostmapNode>());
+    rclcpp::shutdown();
+    return 0;
+}
