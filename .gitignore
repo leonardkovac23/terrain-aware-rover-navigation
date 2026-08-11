@@ -18,3 +18,4 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 scripts
+src/terrain_rover_sim/terrain_rover_sim/ground_truth_node.py
