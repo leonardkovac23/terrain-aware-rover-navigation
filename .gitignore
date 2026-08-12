@@ -14,8 +14,18 @@ models/
 src/perception
 src/leo_common-ros2
 src/my_leo
-__pycache__/
-*.py[cod]
 *.egg-info/
 scripts
 src/terrain_rover_sim/terrain_rover_sim/ground_truth_node.py
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python test/cache artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
