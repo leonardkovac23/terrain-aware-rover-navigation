@@ -2,12 +2,7 @@
 <robot xmlns:xacro="http://ros.org/wiki/xacro"
        name="terrain_rover">
 
-  <xacro:arg name="fixed" default="false"/>
-
   <xacro:include filename="$(find terrain_rover_sim)/urdf/macros.xacro"/>
-
-  <xacro:leo_sim fixed="$(arg fixed)"
-                 robot_ns=""
-                 mecanum_wheels="false"/>
+  <xacro:rover_sim/>
 
 </robot>

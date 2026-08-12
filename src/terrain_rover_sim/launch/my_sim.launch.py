@@ -2,11 +2,11 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.launch_description import LaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 
 from launch_ros.actions import Node
 
@@ -18,6 +18,7 @@ def generate_launch_description():
     pkg_terrain_rover_sim = get_package_share_directory("terrain_rover_sim")
 
     default_world = os.path.join(pkg_terrain_rover_sim, "worlds", "my_world.sdf")
+    gazebo_resource_path = os.path.dirname(pkg_terrain_rover_sim)
 
     sim_world_arg = DeclareLaunchArgument(
         "sim_world",
@@ -29,6 +30,15 @@ def generate_launch_description():
         "enable_ground_truth",
         default_value="true",
         description="Publish Gazebo ground-truth odometry and map->odom TF",
+    )
+
+    gz_resource_path = SetEnvironmentVariable(
+        name="GZ_SIM_RESOURCE_PATH",
+        value=[
+            gazebo_resource_path,
+            ":",
+            EnvironmentVariable("GZ_SIM_RESOURCE_PATH", default_value=""),
+        ],
     )
 
     gz_sim = IncludeLaunchDescription(
@@ -44,7 +54,7 @@ def generate_launch_description():
         os.path.join(
             pkg_terrain_rover_sim,
             "urdf",
-            "leo_sim.urdf.xacro",
+            "rover_sim.urdf.xacro",
         ),
     )
 
@@ -61,7 +71,7 @@ def generate_launch_description():
     
     robot_gazebo_name = "rover"
     
-    leo_rover = Node(
+    spawn_rover = Node(
         package="ros_gz_sim",
         executable="create",
         name="ros_gz_sim_create",
@@ -83,7 +93,6 @@ def generate_launch_description():
             "/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
             "/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry",
             "/imu/data_raw@sensor_msgs/msg/Imu[gz.msgs.IMU",
-            "/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
             "/rgbd_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
             "/rgbd_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             "/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model",
@@ -99,7 +108,6 @@ def generate_launch_description():
         executable="image_bridge",
         name="image_bridge",
         arguments=[
-            "/camera/image_raw",
             "/rgbd_camera/image",
             "/rgbd_camera/depth_image",
         ],
@@ -161,9 +169,10 @@ def generate_launch_description():
         [
             sim_world_arg,
             enable_ground_truth_arg,
+            gz_resource_path,
             gz_sim,
             robot_state_publisher,
-            leo_rover,
+            spawn_rover,
             topic_bridge,
             image_bridge,
             robot_localization_node,
