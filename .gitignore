@@ -8,6 +8,8 @@ komande.txt
 log/
 maps/
 models/
+!src/terrain_rover_sim/models/
+!src/terrain_rover_sim/models/**
 .agents/
 .vscode/
 .codex/
