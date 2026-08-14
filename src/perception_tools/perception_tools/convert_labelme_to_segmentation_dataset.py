@@ -11,7 +11,10 @@ import cv2
 import numpy as np
 
 
-IGNORE_LABELS = {"__ignore__", "_background_", "background"}
+IGNORE_INDEX = 255
+IGNORE_LABELS = {"__ignore__"}
+BACKGROUND_LABELS = {"_background_"}
+
 DEFAULT_COLORS: Dict[str, Tuple[int, int, int]] = {
     "grass": (0, 255, 0),
     "sand": (255, 255, 0),
@@ -19,12 +22,45 @@ DEFAULT_COLORS: Dict[str, Tuple[int, int, int]] = {
     "concrete": (0, 180, 255),
 }
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Convert Labelme polygon annotations into image/mask pairs for semantic segmentation."
+    )
+    parser.add_argument(
+        "--input-dir",
+        nargs="+",
+        default=["dataset/raw_images"],
+        help="One or more directories containing Labelme JSON files and source images",
+    )
+    parser.add_argument(
+        "--labels",
+        default="dataset/terrain_labels.txt",
+        help="Label list file. __ignore__ becomes 255 and _background_ becomes 0.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="dataset/segmentation_dataset",
+        help="Output dataset root",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.45,
+        help="Preview overlay opacity",
+    )
+
+    return parser.parse_args()
 
 def read_labels(labels_path: Path) -> List[str]:
     labels: List[str] = []
     for raw_line in labels_path.read_text().splitlines():
         label = raw_line.strip()
-        if not label or label.startswith("#") or label in IGNORE_LABELS:
+        if (
+            not label
+            or label.startswith("#") 
+            or label in IGNORE_LABELS 
+            or label in BACKGROUND_LABELS
+        ):
             continue
         labels.append(label)
     if not labels:
@@ -70,7 +106,7 @@ def make_preview(image: np.ndarray, mask: np.ndarray, labels: List[str], alpha: 
         color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
         color_layer[mask == class_id] = color_bgr
 
-    has_label = mask > 0
+    has_label = (mask > 0) & (mask != IGNORE_INDEX)
     overlay[has_label] = cv2.addWeighted(
         image[has_label],
         1.0 - alpha,
@@ -112,9 +148,17 @@ def convert_one(
 
     for shape in data.get("shapes", []):
         label = str(shape.get("label", "")).strip()
-        if label in IGNORE_LABELS:
-            continue
-        if label not in label_to_id:
+
+        if label in BACKGROUND_LABELS:
+            fill_value = 0
+            is_semantic_label = False
+        elif label in IGNORE_LABELS:
+            fill_value = IGNORE_INDEX
+            is_semantic_label = False
+        elif label in label_to_id:
+            fill_value = label_to_id[label]
+            is_semantic_label = True
+        else:
             skipped.append(label)
             continue
 
@@ -128,8 +172,9 @@ def convert_one(
             skipped.append(f"{label} (<3 points)")
             continue
 
-        cv2.fillPoly(mask, [points], int(label_to_id[label]))
-        shape_counts[label] += 1
+        cv2.fillPoly(mask, [points], int(fill_value))
+        if is_semantic_label:
+            shape_counts[label] += 1
 
     output_stem = f"{output_prefix}{image_path.stem}"
     image_out = out_dirs["images"] / f"{output_stem}{image_path.suffix}"
@@ -164,39 +209,13 @@ def convert_one(
 def write_label_map(output_dir: Path, labels: List[str]) -> None:
     lines = ["0 background"]
     lines.extend(f"{idx} {label}" for idx, label in enumerate(labels, start=1))
+    lines.append(f"{IGNORE_INDEX} __ignore__")
     (output_dir / "label_map.txt").write_text("\n".join(lines) + "\n")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--input-dir",
-        nargs="+",
-        default="dataset/raw_images/terrain_rgb_01",
-        help="One or more directories containing Labelme JSON files and source images",
-    )
-    parser.add_argument(
-        "--labels",
-        default="dataset/terrain_labels.txt",
-        help="Label list file. __ignore__ and _background_ are ignored.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="dataset/labelme_segmentation",
-        help="Output dataset root",
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=0.45,
-        help="Preview overlay opacity",
-    )
-    parser.add_argument(
-        "--clear-output",
-        action="store_true",
-        help="Clear existing accepted images, masks, and previews before writing output.",
-    )
-    args = parser.parse_args()
+
+    args = parse_args()
 
     input_dirs = [Path(path) for path in args.input_dir]
     labels_path = Path(args.labels)
@@ -211,14 +230,10 @@ def main() -> None:
         json_groups.append((input_dir, json_paths))
 
     out_dirs = {
-        "images": output_dir / "labeling" / "accepted" / "images",
-        "masks": output_dir / "labeling" / "accepted" / "masks",
-        "previews": output_dir / "labeling" / "accepted" / "previews",
+        "images": output_dir / "images",
+        "masks": output_dir / "masks",
+        "previews": output_dir / "previews",
     }
-    if args.clear_output:
-        for path in out_dirs.values():
-            if path.exists():
-                shutil.rmtree(path)
 
     for path in out_dirs.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -231,18 +246,15 @@ def main() -> None:
         prefix = f"{safe_name(input_dir.name)}_" if use_prefixes else ""
         results.extend(convert_one(path, labels, out_dirs, args.alpha, prefix) for path in json_paths)
 
-    summary_path = output_dir / "conversion_summary.json"
-    summary_path.write_text(json.dumps({"labels": labels, "results": results}, indent=2))
-
     print(f"Converted {len(results)} Labelme files")
     print(f"Images:   {out_dirs['images']}")
     print(f"Masks:    {out_dirs['masks']}")
     print(f"Previews: {out_dirs['previews']}")
-    print(f"Summary:  {summary_path}")
     print("\nClass IDs:")
     print("  0 background")
     for idx, label in enumerate(labels, start=1):
         print(f"  {idx} {label}")
+    print(f"  {IGNORE_INDEX} __ignore__")
 
     skipped_total = sum(len(result["skipped"]) for result in results)
     if skipped_total:
