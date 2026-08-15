@@ -20,6 +20,11 @@ src/my_leo
 scripts
 src/terrain_rover_sim/terrain_rover_sim/ground_truth_node.py
 
+# Experimental segmentation training scripts
+src/perception_tools/perception_tools/segmentation_model_common.py
+src/perception_tools/perception_tools/train_segmentation_model.py
+src/perception_tools/perception_tools/infer_segmentation_image.py
+
 # Python cache
 __pycache__/
 *.py[cod]
