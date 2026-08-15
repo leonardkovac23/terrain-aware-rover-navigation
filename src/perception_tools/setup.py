@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'extract_images_from_bag = perception_tools.extract_images_from_bag:main',
+            'convert_labelme_to_segmentation_dataset = perception_tools.convert_labelme_to_segmentation_dataset:main',
         ],
     },
 )

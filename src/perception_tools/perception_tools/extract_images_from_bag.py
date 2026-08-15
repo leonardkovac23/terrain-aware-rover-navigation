@@ -76,7 +76,7 @@ def parse_args():
     return parser.parse_args()
 
 #Get picture time stamp in seconds
-def image_time_seconds(msg: Image, fallback_timestamp_ns: int) -> float:
+def image_time_seconds(msg: Image, fallback_timestamp_ns: int):
     stamp = msg.header.stamp
     if stamp.sec != 0 or stamp.nanosec != 0:
         return float(stamp.sec) + float(stamp.nanosec) * 1e-9

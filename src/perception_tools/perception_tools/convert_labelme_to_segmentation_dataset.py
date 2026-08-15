@@ -1,11 +1,8 @@
-from __future__ import annotations
-
 import argparse
 import json
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -15,7 +12,7 @@ IGNORE_INDEX = 255
 IGNORE_LABELS = {"__ignore__"}
 BACKGROUND_LABELS = {"_background_"}
 
-DEFAULT_COLORS: Dict[str, Tuple[int, int, int]] = {
+DEFAULT_COLORS: dict[str, tuple[int, int, int]] = {
     "grass": (0, 255, 0),
     "sand": (255, 255, 0),
     "mud": (255, 0, 255),
@@ -48,56 +45,75 @@ def parse_args():
         default=0.45,
         help="Preview overlay opacity",
     )
+    parser.add_argument(
+        "--print-pixel-stats",
+        action="store_true",
+        help="Print pixel percentage per class after conversion."
+    )
+    parser.add_argument(
+        "--stats-only",
+        action="store_true",
+        help="Only compute pixel statistics from existing masks without converting Labelme files."
+    )
 
     return parser.parse_args()
 
-def read_labels(labels_path: Path) -> List[str]:
-    labels: List[str] = []
+def read_labels(labels_path: Path):
+    labels = []
     for raw_line in labels_path.read_text().splitlines():
         label = raw_line.strip()
         if (
             not label
-            or label.startswith("#") 
-            or label in IGNORE_LABELS 
+            or label.startswith("#")
+            or label in IGNORE_LABELS
             or label in BACKGROUND_LABELS
         ):
             continue
+
         labels.append(label)
+
     if not labels:
-        raise ValueError(f"No semantic labels found in {labels_path}")
+        raise ValueError(f"No labels found in {labels_path}")
+    
     return labels
 
-
-def polygon_points(points: List[List[float]], width: int, height: int) -> np.ndarray:
+def polygon_points(points: list[list[float]], width: int, height: int):
     pts = np.asarray(points, dtype=np.float32)
+
     pts[:, 0] = np.clip(pts[:, 0], 0, width - 1)
     pts[:, 1] = np.clip(pts[:, 1], 0, height - 1)
+
     return np.round(pts).astype(np.int32)
 
-
-def rectangle_points(points: List[List[float]], width: int, height: int) -> np.ndarray:
+#Label me saves 2 opposite corners of a rectangle
+def rectangle_points(points: list[list[float]], width: int, height: int):
     if len(points) != 2:
         raise ValueError("Labelme rectangle must have exactly two points")
+    
     (x1, y1), (x2, y2) = points
     rect = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
     return polygon_points(rect, width, height)
 
 
-def shape_to_points(shape: Dict, width: int, height: int) -> np.ndarray:
+def shape_to_points(shape: dict, width: int, height: int):
     shape_type = shape.get("shape_type", "polygon")
     points = shape.get("points", [])
+
     if shape_type == "polygon":
         return polygon_points(points, width, height)
+    
     if shape_type == "rectangle":
         return rectangle_points(points, width, height)
+    
     raise ValueError(f"Unsupported shape_type: {shape_type}")
 
 
-def safe_name(text: str) -> str:
+def safe_name(text: str):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_")
 
 
-def make_preview(image: np.ndarray, mask: np.ndarray, labels: List[str], alpha: float) -> np.ndarray:
+def make_preview(image: np.ndarray, mask: np.ndarray, labels: list[str], alpha: float):
     overlay = image.copy()
     color_layer = np.zeros_like(image)
 
@@ -107,35 +123,33 @@ def make_preview(image: np.ndarray, mask: np.ndarray, labels: List[str], alpha: 
         color_layer[mask == class_id] = color_bgr
 
     has_label = (mask > 0) & (mask != IGNORE_INDEX)
-    overlay[has_label] = cv2.addWeighted(
-        image[has_label],
-        1.0 - alpha,
-        color_layer[has_label],
-        alpha,
-        0.0,
-    )
+    if np.any(has_label):
+        overlay[has_label] = cv2.addWeighted(
+            image[has_label],
+            1.0 - alpha,
+            color_layer[has_label],
+            alpha,
+            0.0,
+        )
     return overlay
 
 
-def convert_one(
-    json_path: Path,
-    labels: List[str],
-    out_dirs: Dict[str, Path],
-    alpha: float,
-    output_prefix: str = "",
-) -> Dict:
+def convert_one(json_path: Path, labels: list[str], out_dirs: dict[str, Path], alpha: float, output_prefix: str = ""):
     label_to_id = {label: idx for idx, label in enumerate(labels, start=1)}
     data = json.loads(json_path.read_text())
 
     width = int(data["imageWidth"])
     height = int(data["imageHeight"])
     image_path = json_path.parent / data["imagePath"]
+
     if not image_path.exists():
         raise FileNotFoundError(f"Image referenced by {json_path.name} not found: {image_path}")
 
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+
     if image is None:
         raise ValueError(f"Could not read image: {image_path}")
+    
     if image.shape[:2] != (height, width):
         raise ValueError(
             f"Image size mismatch for {image_path.name}: "
@@ -206,34 +220,81 @@ def convert_one(
     }
 
 
-def write_label_map(output_dir: Path, labels: List[str]) -> None:
+def write_label_map(output_dir: Path, labels: list[str]):
     lines = ["0 background"]
     lines.extend(f"{idx} {label}" for idx, label in enumerate(labels, start=1))
     lines.append(f"{IGNORE_INDEX} __ignore__")
     (output_dir / "label_map.txt").write_text("\n".join(lines) + "\n")
 
+def collect_pixel_counts(mask_dir: Path):
+    counts = {}
+    for mask_path in sorted(mask_dir.glob("*.png")):
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
 
-def main() -> None:
+        if mask is None:
+            raise ValueError(f"Could not read mask: {mask_path}")
+        
+        values, value_counts = np.unique(mask, return_counts=True)
+
+        for value, count in zip(values, value_counts):
+            value = int(value)
+            count = int(count)
+            counts[value] = counts.get(value, 0) + count
+
+    return counts
+
+def format_pixel_stats(counts, labels):
+    class_names = {0: "background"}
+    for idx, label in enumerate(labels, start=1):
+        class_names[idx] = label
+    class_names[IGNORE_INDEX] = "__ignore__"
+
+    total_pixels = sum(counts.values())
+
+    lines = []
+    lines.append("Pixel distribution:")
+    lines.append(f"Total pixels: {total_pixels}")
+    lines.append("")
+
+    for class_id, name in class_names.items():
+        pixels = counts.get(class_id, 0)
+        percent = 100.0 * pixels / total_pixels if total_pixels else 0.0
+        lines.append(f"{class_id:3d} {name:12s}: {percent:6.2f}% ({pixels})")
+
+    return "\n".join(lines)
+
+def main():
 
     args = parse_args()
 
     input_dirs = [Path(path) for path in args.input_dir]
     labels_path = Path(args.labels)
     output_dir = Path(args.output_dir)
-
     labels = read_labels(labels_path)
-    json_groups = []
-    for input_dir in input_dirs:
-        json_paths = sorted(input_dir.glob("*.json"))
-        if not json_paths:
-            raise RuntimeError(f"No Labelme JSON files found in {input_dir}")
-        json_groups.append((input_dir, json_paths))
-
     out_dirs = {
         "images": output_dir / "images",
         "masks": output_dir / "masks",
         "previews": output_dir / "previews",
     }
+
+    if args.stats_only:
+        pixel_counts = collect_pixel_counts(out_dirs["masks"])
+        pixel_stats = format_pixel_stats(pixel_counts, labels)
+
+        stats_path = output_dir / "class_pixel_distribution.txt"
+        stats_path.write_text(pixel_stats + "\n")
+
+        print(pixel_stats)
+        print(f"\nStats written to: {stats_path}")
+        return
+    
+    json_groups = []
+
+    for input_dir in input_dirs:
+        json_paths = sorted(input_dir.glob("*.json"))
+        if not json_paths:
+            raise RuntimeError(f"No Labelme JSON files found in {input_dir}")
+        json_groups.append((input_dir, json_paths))
 
     for path in out_dirs.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -260,6 +321,15 @@ def main() -> None:
     if skipped_total:
         print(f"\nWarnings: skipped {skipped_total} shapes with unknown/unsupported labels.")
 
+    pixel_counts = collect_pixel_counts(out_dirs["masks"])
+    pixel_stats = format_pixel_stats(pixel_counts, labels)
+
+    stats_path = output_dir / "class_pixel_distribution.txt"
+    stats_path.write_text(pixel_stats + "\n")
+
+    if args.print_pixel_stats:
+        print()
+        print(pixel_stats)
 
 if __name__ == "__main__":
     main()
