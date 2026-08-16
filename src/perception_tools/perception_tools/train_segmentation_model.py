@@ -4,7 +4,12 @@ from pathlib import Path
 
 import numpy as np
 
-from perception_tools.segmentation_model_common import IGNORE_INDEX, read_label_map
+from perception_tools.segmentation_model_common import (
+    IGNORE_INDEX,
+    extract_logits,
+    read_label_map,
+    select_device,
+)
 
 
 def parse_args():
@@ -62,17 +67,6 @@ def import_training_dependencies():
     return torch, CrossEntropyLoss, SGD, CosineAnnealingLR, DataLoader, Subset, models, SegmentationDataset
 
 
-def select_device(torch, requested_device):
-    if requested_device == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-
-    if requested_device == "cuda" and not torch.cuda.is_available():
-        print("Warning: CUDA requested but unavailable. Falling back to CPU.")
-        return "cpu"
-
-    return requested_device
-
-
 def split_indices(num_samples, train_split, val_split, seed):
     split_sum = train_split + val_split
     
@@ -127,12 +121,6 @@ def summarize_metrics(intersections, unions, correct_total):
 
     mean_iou = float(np.mean(valid_ious)) if valid_ious else 0.0
     return pixel_accuracy, mean_iou
-
-
-def extract_logits(model_output):
-    if isinstance(model_output, (list, tuple)):
-        return model_output[0]
-    return model_output
 
 
 def run_epoch(torch, model, loader, criterion, optimizer, device, num_classes):
