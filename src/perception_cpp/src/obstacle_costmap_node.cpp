@@ -166,8 +166,6 @@ class ObstacleCostmapNode : public rclcpp::Node{
             tf2::Transform source_to_target_transform;
             tf2::fromMsg(transform_stamped.transform, source_to_target_transform);
 
-
-
             pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_input(new pcl::PointCloud<pcl::PointXYZ>);
             pcl::fromROSMsg(*msg, *cloud_input);
 
