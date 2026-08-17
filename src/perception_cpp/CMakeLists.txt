@@ -17,6 +17,8 @@ find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED)
 
 #PointCloud Filter Node
 add_executable(pointcloud_filter_node 
@@ -88,12 +90,35 @@ target_include_directories(slope_costmap_node PUBLIC
   ${PCL_INCLUDE_DIRS}
 )
 
+#Terrain Segmentation Node
+add_executable(terrain_segmentation_node
+	src/terrain_segmentation_node.cpp
+)
+
+ament_target_dependencies(terrain_segmentation_node
+	rclcpp
+	sensor_msgs
+	cv_bridge
+)
+
+target_include_directories(terrain_segmentation_node PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
+  /usr/local/include/onnxruntime
+)
+
+target_link_libraries(terrain_segmentation_node
+  ${OpenCV_LIBRARIES}
+  onnxruntime
+)
+
 install(TARGETS
   pointcloud_filter_node
   obstacle_costmap_node
   slope_costmap_node
+  terrain_segmentation_node
   DESTINATION lib/${PROJECT_NAME}
 )
+
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

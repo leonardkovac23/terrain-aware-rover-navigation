@@ -4,7 +4,10 @@ from pathlib import Path
 import torch
 from super_gradients.training import models
 
-from perception_tools.segmentation_model_common import select_device
+try:
+    from perception_tools.segmentation_model_common import select_device
+except ModuleNotFoundError:
+    from segmentation_model_common import select_device
 
 
 def parse_args():
@@ -101,6 +104,7 @@ def export_onnx(checkpoint, output_path: Path, device, opset: int):
         output_names=["logits"],
         opset_version=opset,
         do_constant_folding=True,
+        dynamo=False,
     )
 
     return model_name, num_classes, input_size
