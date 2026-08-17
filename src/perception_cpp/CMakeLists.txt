@@ -63,9 +63,35 @@ target_include_directories(obstacle_costmap_node PUBLIC
   ${PCL_INCLUDE_DIRS}
 )
 
+#Slope Costmap Node
+add_executable(slope_costmap_node
+	src/slope_costmap_node.cpp
+)
+
+ament_target_dependencies(slope_costmap_node
+	rclcpp
+	sensor_msgs
+	nav_msgs
+	std_msgs
+	geometry_msgs
+	pcl_conversions
+	tf2
+	tf2_ros
+	tf2_geometry_msgs
+)
+
+target_link_libraries(slope_costmap_node
+  ${PCL_LIBRARIES}
+)
+
+target_include_directories(slope_costmap_node PUBLIC
+  ${PCL_INCLUDE_DIRS}
+)
+
 install(TARGETS
   pointcloud_filter_node
   obstacle_costmap_node
+  slope_costmap_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -125,6 +125,12 @@ class SlopeCostmapNode : public rclcpp::Node{
                 return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
             }
         };
+        struct NeighborOffset{
+            int dx;
+            int dy;
+            double local_x;
+            double local_y;
+        };
 
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr ground_points_sub_;
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
@@ -356,6 +362,332 @@ class SlopeCostmapNode : public rclcpp::Node{
             const int hole_fill_min_known_neighbors = this->get_parameter("hole_fill_min_known_neighbors").as_int();
             const int warmup_clouds = this->get_parameter("warmup_clouds").as_int();
             const bool enable_publish_during_warmup = this->get_parameter("enable_publish_during_warmup").as_bool();
+
+            if(cell_height_.empty()){
+                RCLCPP_WARN(this->get_logger(), "Slope height map is empty");
+                return;
+            }
+
+            if(grid_resolution <= 0.0){
+                RCLCPP_WARN(this->get_logger(), "Invalid grid_resolution");
+                return;
+            }
+
+            if(clouds_processed_ <  warmup_clouds && !enable_publish_during_warmup){
+                    RCLCPP_INFO(this->get_logger(), "Warmup: %d/%d clouds processed. Not publishing slope map yet.",
+                        clouds_processed_,
+                        warmup_clouds
+                    );
+                    return;
+            }
+
+            
+            const int width_cells = static_cast<int>(std::round(map_width / grid_resolution));
+            const int height_cells = static_cast<int>(std::round(map_height / grid_resolution));
+            
+            if(width_cells <= 0 || height_cells <= 0){
+                RCLCPP_WARN(this->get_logger(), "Invalid map dimensions");
+                return;
+            }
+            
+            //If map does not exist or map size was changed, initialize map cells to uknown
+            const std::size_t map_size = static_cast<std::size_t>(width_cells * height_cells);
+            if(persistent_costmap_.size() != map_size){
+                persistent_costmap_.assign(map_size, static_cast<int8_t>(cost_unknown));
+            }
+
+            std::vector<int8_t> costmap_data = persistent_costmap_;
+
+            if(enable_cost_decay && cost_decay_per_publish > 0){
+                for(auto& cost : costmap_data){
+                    if(cost == static_cast<int8_t>(cost_unknown)) continue;
+
+                    const int decay_cost = std::max(static_cast<int>(cost) - cost_decay_per_publish, 0);
+                    cost = static_cast<int8_t>(decay_cost);
+                }
+            }
+            
+            std::unordered_map<CellIndex, double, CellIndexHash> confident_height;
+            for(const auto& [index, z] : cell_height_){
+                auto confidence_it = cell_confidence_.find(index);
+
+                if(confidence_it == cell_confidence_.end()) continue;
+
+                if(confidence_it->second >= min_cell_confidence) confident_height[index] = z;
+            }
+
+            if(confident_height.empty()){
+                RCLCPP_WARN(this->get_logger(), "No confident height cells yet");
+                return;
+            }
+
+            const std::vector<NeighborOffset> neighbor_offsets = getNeighborOffsets(slope_radius, grid_resolution);
+            const int max_neighbors = static_cast<int>(neighbor_offsets.size());
+
+            int slope_cells = 0;
+            double slope_sum = 0.0;
+            double slope_max = 0.0;
+            int updated_cells = 0;
+
+            for(const auto& [index, height] : confident_height){
+                (void)height;
+
+                int neighbor_count = 0;
+
+                double sum_x = 0.0;
+                double sum_y = 0.0;
+                double sum_z = 0.0;
+                double sum_xx = 0.0;
+                double sum_xy = 0.0;
+                double sum_yy = 0.0;
+                double sum_xz = 0.0;
+                double sum_yz = 0.0;
+                double sum_zz = 0.0;
+                
+                double min_z = std::numeric_limits<double>::infinity();
+                double max_z = -std::numeric_limits<double>::infinity();
+
+                for(const auto& offset : neighbor_offsets){
+                    CellIndex neighbor{index.x + offset.dx, index.y + offset.dy};
+
+                    auto height_it = confident_height.find(neighbor);
+
+                    if(height_it == confident_height.end()){
+                        continue;
+                    }
+
+                    const double z = height_it->second;
+
+                    neighbor_count++;
+
+                    sum_x += offset.local_x;
+                    sum_y += offset.local_y;
+                    sum_z += z;
+
+                    sum_xx += offset.local_x * offset.local_x;
+                    sum_xy += offset.local_x * offset.local_y;
+                    sum_yy += offset.local_y * offset.local_y;
+
+                    sum_xz += offset.local_x * z;
+                    sum_yz += offset.local_y * z;
+                    sum_zz += z * z;
+
+                    if(z < min_z) min_z = z;
+                    if(z > max_z) max_z = z;
+
+                    
+                }
+                //filters
+                if(neighbor_count < min_neighbors_for_slope) continue;
+
+                const double neighbor_fill_ratio = static_cast<double>(neighbor_count) / static_cast<double>(max_neighbors);
+                if(neighbor_fill_ratio < min_neighbor_fill_ratio) continue;
+
+                const double height_range = max_z - min_z;
+                if(height_range > max_neighbor_height_range) continue;
+
+                const double mean_z = sum_z / static_cast<double>(neighbor_count);
+                const double variance_z = std::max((sum_zz / static_cast<double>(neighbor_count)) - (mean_z * mean_z), 0.0);
+                const double height_std = std::sqrt(variance_z);
+                if(height_std > max_neighbor_height_std) continue;
+
+                const double slope = calculateSlopePlaneFitFromSums(neighbor_count, sum_x, sum_y, sum_z, sum_xx, sum_xy, sum_yy, sum_xz, sum_yz);
+                
+                slope_cells++;
+                slope_sum += slope;
+
+                if(slope > slope_max) slope_max = slope;
+
+                const int measured_cost = slopeToCost(slope, slope_safe, slope_caution, slope_danger, cost_safe, cost_caution, cost_danger, cost_lethal);
+
+                //Fill map with data
+                const int data_index = index.y * width_cells + index.x;
+                const int old_cost = static_cast<int>(costmap_data[data_index]);
+
+                int new_cost = measured_cost;
+
+                if(old_cost != cost_unknown){
+                    double alpha = cost_smoothing_alpha_down;
+
+                    if(measured_cost > old_cost) alpha = cost_smoothing_alpha_up;
+
+                    new_cost = static_cast<int>(std::round((1.0 - alpha) * old_cost + alpha * measured_cost));
+                }
+
+                costmap_data[data_index] = static_cast<int8_t>(std::clamp(new_cost, 0, 100));
+                updated_cells++;
+
+            }
+            
+            if(enable_hole_filling){
+                fillSmallUnknownHoles(costmap_data, width_cells, height_cells, static_cast<int8_t>(cost_unknown), hole_fill_min_known_neighbors);
+            }
+            
+            persistent_costmap_ = costmap_data;
+
+            nav_msgs::msg::OccupancyGrid msg;
+
+            msg.header.stamp = this->get_clock()->now();
+            msg.header.frame_id = target_frame;
+
+            msg.info.map_load_time = this->get_clock()->now();
+            msg.info.resolution = grid_resolution;
+            msg.info.width = width_cells;
+            msg.info.height = height_cells;
+
+            msg.info.origin.position.x = origin_x;
+            msg.info.origin.position.y = origin_y;
+            msg.info.origin.position.z = 0.0;
+            msg.info.origin.orientation.x = 0.0;
+            msg.info.origin.orientation.y = 0.0;
+            msg.info.origin.orientation.z = 0.0;
+            msg.info.origin.orientation.w = 1.0;
+
+            msg.data = persistent_costmap_;
+
+            map_pub_->publish(msg);
+
+            //logging info
+            const double slope_avg = slope_cells > 0 ? slope_sum / slope_cells : 0.0;
+
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Published slope map | height cells: %zu | confident: %zu | slope cells: %d | updated: %d | slope avg/max: %.2f/%.2f deg",
+                cell_height_.size(),
+                confident_height.size(),
+                slope_cells,
+                updated_cells,
+                slope_avg * 180.0 / M_PI,
+                slope_max * 180.0 / M_PI
+            );
+
+        }
+
+        std::vector<NeighborOffset> getNeighborOffsets(int slope_radius, double grid_resolution){
+            std::vector<NeighborOffset> offsets;
+
+            for(int dx = -slope_radius; dx <= slope_radius; ++dx){
+                for(int dy = -slope_radius; dy <= slope_radius; ++dy){
+                    offsets.push_back(
+                        NeighborOffset{dx, dy, dx * grid_resolution, dy * grid_resolution}
+                    );
+                }
+            }
+
+            return offsets;
+        }
+
+        double calculateSlopePlaneFitFromSums(int neighbor_count, double sum_x, double sum_y, double sum_z, double sum_xx, double sum_xy, double sum_yy, double sum_xz, double sum_yz){
+            //left side matrix
+            const double a11 = sum_xx;
+            const double a12 = sum_xy;
+            const double a13 = sum_x;
+
+            const double a21 = sum_xy;
+            const double a22 = sum_yy;
+            const double a23 = sum_y;
+
+            const double a31 = sum_x;
+            const double a32 = sum_y;
+            const double a33 = static_cast<double>(neighbor_count);
+
+            //right side matrix
+            const double b1 = sum_xz;
+            const double b2 = sum_yz;
+            const double b3 = sum_z;
+
+            const double detA =
+                  a11 * (a22 * a33 - a23 * a32)
+                - a12 * (a21 * a33 - a23 * a31)
+                + a13 * (a21 * a32 - a22 * a31);
+
+            if(std::abs(detA) < 1e-12) return 0.0;
+            const double detA_a =
+            b1  * (a22 * a33 - a23 * a32)
+            - a12 * (b2  * a33 - a23 * b3)
+            + a13 * (b2  * a32 - a22 * b3);
+            
+            const double detA_b =
+            a11 * (b2  * a33 - a23 * b3)
+            - b1  * (a21 * a33 - a23 * a31)
+            + a13 * (a21 * b3  - b2  * a31);
+            
+            //Cramers rule
+            const double plane_a = detA_a / detA;
+            const double plane_b = detA_b / detA;
+
+            double gradient = std::sqrt(plane_a * plane_a + plane_b * plane_b);
+            double slope = std::atan(gradient);
+
+            return slope;
+            
+        }
+
+
+        int slopeToCost(double slope, double slope_safe, double slope_caution, double slope_danger, int cost_safe, int cost_caution, int cost_danger, int cost_lethal){
+            double cost = 0;
+
+            if(slope < slope_safe){
+                cost = cost_safe;
+            }
+            else if(slope < slope_caution){
+                const double denominator = std::max(slope_caution - slope_safe, 1e-6);
+                const double t = (slope - slope_safe) / denominator;
+
+                cost = cost_safe + t * (cost_caution - cost_safe);
+            }
+            else if(slope < slope_danger){
+                const double denominator = std::max(slope_danger - slope_caution, 1e-6);
+                const double t = (slope - slope_caution) / denominator;
+
+                cost = cost_caution + t * (cost_danger - cost_caution);
+            }
+            else{
+                cost = cost_lethal;
+            }
+
+            return std::clamp(static_cast<int>(std::round(cost)), 0, 100);
+        }
+
+        void fillSmallUnknownHoles(std::vector<int8_t>& costmap_data, int width_cells, int height_cells, int8_t cost_unknown, int min_known_neighbors){
+            if(width_cells < 3 || height_cells < 3){
+                return;
+            }
+
+            std::vector<int8_t> filled_map = costmap_data;
+
+            for(int iy = 1; iy <= height_cells - 2; ++iy){
+                for(int ix = 1; ix <= width_cells - 2; ++ix){
+
+                    int data_index = iy * width_cells + ix;
+
+                    if(costmap_data[data_index] != cost_unknown) continue;
+
+                    int known_neighbors = 0;
+                    int neighbor_sum = 0;
+
+                    for(int dx = -1; dx <= 1; ++dx){
+                        for(int dy = -1; dy <= 1; ++dy){
+                            if (dx == 0 && dy == 0) continue;
+
+                            int neighbor_index = (iy + dy) * width_cells + (ix + dx);
+                            int neighbor_cost = costmap_data[neighbor_index];
+
+                            if(neighbor_cost == cost_unknown) continue;
+
+                            known_neighbors++;
+                            neighbor_sum += neighbor_cost;
+                        }
+                    }
+
+                    if(known_neighbors >= min_known_neighbors){
+                        double average_cost = std::round(static_cast<double>(neighbor_sum) / static_cast<double>(known_neighbors));
+                        filled_map[data_index] = static_cast<int8_t>(std::clamp(static_cast<int>(average_cost), 0 , 100));
+                    }
+                }
+            }
+
+            costmap_data = filled_map;
         }
 
         double percentile(std::vector<double> values, double percentile_value){
@@ -376,3 +708,10 @@ class SlopeCostmapNode : public rclcpp::Node{
             return values[index];
         }
 };
+
+int main(int argc, char ** argv){
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<SlopeCostmapNode>());
+    rclcpp::shutdown();
+    return 0;
+}
