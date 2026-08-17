@@ -32,3 +32,5 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+
+src/perception_tools/perception_tools/evaluate_slope_map_against_mesh.py

@@ -26,8 +26,7 @@ setup(
         'console_scripts': [
             'extract_images_from_bag = perception_tools.extract_images_from_bag:main',
             'convert_labelme_to_segmentation_dataset = perception_tools.convert_labelme_to_segmentation_dataset:main',
-            'train_segmentation_model = perception_tools.train_segmentation_model:main',
-            'infer_segmentation_image = perception_tools.infer_segmentation_image:main',
+            'evaluate_slope_map_against_mesh = perception_tools.evaluate_slope_map_against_mesh:main',
         ],
     },
 )
