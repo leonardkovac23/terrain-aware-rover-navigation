@@ -49,6 +49,11 @@ class PointCloudFilterNode : public rclcpp::Node{
             //publishers 
             ground_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/points_ground",10);
             obstacle_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/points_obstacles",10);
+
+            RCLCPP_INFO(this->get_logger(), "pointcloud_filter_node started.");
+            RCLCPP_INFO(this->get_logger(), "Subscribing: /scan/points");
+            RCLCPP_INFO(this->get_logger(), "Publishing ground: /points_ground");
+            RCLCPP_INFO(this->get_logger(), "Publishing obstacles: /points_obstacles");
             
         }
     private:
@@ -146,7 +151,7 @@ class PointCloudFilterNode : public rclcpp::Node{
 
             for(const auto& [index, stat] : height_cells){
                 float vertical_range = stat.max_z - stat.min_z;
-                float neighbor_median_minz = findNeighborMedianMinZ(height_cells, index);
+                float neighbor_median_minz = findNeighborMedianMinZ(height_cells, index, neighbor_radius);
                 float ground_jump = std::abs(stat.min_z - neighbor_median_minz);
 
                 if(vertical_range > vertical_range_thresh && ground_jump < ground_jump_thresh){
@@ -181,7 +186,7 @@ class PointCloudFilterNode : public rclcpp::Node{
                     static_cast<int>(std::floor(point.y /grid_res))
                 };
 
-                std::optional<float> local_ground_z = findLocalGroundZ(height_cells, index);
+                std::optional<float> local_ground_z = findLocalGroundZ(height_cells, index, neighbor_radius);
 
                 if(!local_ground_z) continue;
 
@@ -222,7 +227,7 @@ class PointCloudFilterNode : public rclcpp::Node{
             //Spatial filter
             std::unordered_set<CellIndex, CellIndexHash> filtered_obstacle_cells;
             for(CellIndex index : current_obstacle_cells){
-                int neighbor_count = countObstacleNeighbors(current_obstacle_cells, index);
+                int neighbor_count = countObstacleNeighbors(current_obstacle_cells, index, obstacle_neighbor_radius);
                 if (neighbor_count >= min_obstacle_neighbor_cells) filtered_obstacle_cells.insert(index);
             }
 
@@ -258,13 +263,24 @@ class PointCloudFilterNode : public rclcpp::Node{
 
             ground_pub_->publish(ground_msg);
             obstacle_pub_->publish(obstacle_msg);
+
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(),
+                *this->get_clock(),
+                2000,
+                "Processed point cloud | input: %zu | downsampled: %zu | grid cells: %zu | obstacle mask cells: %zu | ground points: %zu | obstacle points: %zu",
+                cloud_input->points.size(),
+                cloud_downsampled->points.size(),
+                height_cells.size(),
+                obstacle_cell_mask.size(),
+                ground_points->points.size(),
+                obstacle_points->points.size()
+            );
             
         }
 
         //Find Median of min_z of cells in given radius around given cell
-        float findNeighborMedianMinZ(const std::unordered_map<CellIndex, CellStats, CellIndexHash>& height_cells, const CellIndex& index){
-            int radius = 1; //add param later
-
+        float findNeighborMedianMinZ(const std::unordered_map<CellIndex, CellStats, CellIndexHash>& height_cells, const CellIndex& index, int radius){
             std::vector<float> neighbors;
             neighbors.reserve((2 * radius + 1) * (2 * radius + 1) -1);
 
@@ -290,8 +306,7 @@ class PointCloudFilterNode : public rclcpp::Node{
         }
 
         //Find min min_z in given radius around given cell
-        std::optional<float> findLocalGroundZ(const std::unordered_map<CellIndex, CellStats, CellIndexHash>& height_cells, const CellIndex& index){
-            int radius = 1; //add param later
+        std::optional<float> findLocalGroundZ(const std::unordered_map<CellIndex, CellStats, CellIndexHash>& height_cells, const CellIndex& index, int radius){
             std::optional<float> min_z;
 
             for(int dx = -radius; dx <= radius; ++dx){
@@ -308,8 +323,7 @@ class PointCloudFilterNode : public rclcpp::Node{
         }
 
         //Count how many neighbors of obstacle cell are also marked as obstacle
-        int countObstacleNeighbors(const std::unordered_set<CellIndex, CellIndexHash>& obstacle_cells, const CellIndex& index){
-            int radius = 1; //add param later
+        int countObstacleNeighbors(const std::unordered_set<CellIndex, CellIndexHash>& obstacle_cells, const CellIndex& index, int radius){
             int count = 0;
 
             for(int dx = -radius; dx <= radius; ++dx){

@@ -86,6 +86,11 @@ class ObstacleCostmapNode : public rclcpp::Node{
             //tf2 components
             tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
             tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+            RCLCPP_INFO(this->get_logger(), "obstacle_costmap_node started.");
+            RCLCPP_INFO(this->get_logger(), "Subscribing: %s", input_topic.c_str());
+            RCLCPP_INFO(this->get_logger(), "Publishing: %s", map_topic.c_str());
+            RCLCPP_INFO(this->get_logger(), "Target frame: %s", this->get_parameter("target_frame").as_string().c_str());
         }
     private:
         struct CellIndex{
@@ -213,15 +218,28 @@ class ObstacleCostmapNode : public rclcpp::Node{
             }
 
             //Spatial filter
+            int updated_cells = 0;
             for(const auto& index : obstacle_candidates){
                 if(countCandidateNeighbors(obstacle_candidates, index, obstacle_neighbor_radius) >= min_obstacle_neighbor_cells){
                     hit_counts_[index] += hit_increment;
+                    updated_cells++;
 
                     if(hit_counts_[index] > max_hits_per_cell){
                         hit_counts_[index] = max_hits_per_cell;
                     }
                 }
             }
+
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(),
+                *this->get_clock(),
+                2000,
+                "Processed obstacle cloud | input points: %zu | candidate cells: %zu | updated cells: %d | tracked cells: %zu",
+                cloud_input->points.size(),
+                obstacle_candidates.size(),
+                updated_cells,
+                hit_counts_.size()
+            );
         }
 
         void publishMap(){
@@ -305,6 +323,24 @@ class ObstacleCostmapNode : public rclcpp::Node{
             map_pub_->publish(msg);
 
             if(enable_hit_decay) applyDecay();
+
+            int obstacle_cells = 0;
+            for(const auto& value : data){
+                if(value == obstacle_cost){
+                    obstacle_cells++;
+                }
+            }
+
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(),
+                *this->get_clock(),
+                2000,
+                "Published obstacle map | tracked cells: %zu | obstacle cells: %d | map: %dx%d",
+                hit_counts_.size(),
+                obstacle_cells,
+                width_cells,
+                height_cells
+            );
         }
 
         //Count how many neighbors of obstacle cell are also marked as obstacle
