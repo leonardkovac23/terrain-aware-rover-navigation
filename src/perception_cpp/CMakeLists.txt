@@ -19,6 +19,8 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(nav2_msgs REQUIRED)
 
 #PointCloud Filter Node
 add_executable(pointcloud_filter_node 
@@ -111,11 +113,65 @@ target_link_libraries(terrain_segmentation_node
   onnxruntime
 )
 
+#Semantic Terrain Map Node
+add_executable(semantic_terrain_map_node
+	src/semantic_terrain_map_node.cpp
+)
+
+ament_target_dependencies(semantic_terrain_map_node
+	rclcpp
+	sensor_msgs
+	nav_msgs
+	std_msgs
+	geometry_msgs
+	tf2
+	tf2_ros
+	tf2_geometry_msgs
+	cv_bridge
+)
+
+target_include_directories(semantic_terrain_map_node PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(semantic_terrain_map_node
+  ${OpenCV_LIBRARIES}
+)
+
+#Traversability Costmap Node
+add_executable(traversability_costmap_node
+	src/traversability_costmap_node.cpp
+)
+
+ament_target_dependencies(traversability_costmap_node
+	rclcpp
+	nav_msgs
+)
+
+#Frontier Exploration Node
+add_executable(frontier_exploration_node
+	src/frontier_exploration_node.cpp
+)
+
+ament_target_dependencies(frontier_exploration_node
+	rclcpp
+	rclcpp_action
+	nav_msgs
+	geometry_msgs
+	nav2_msgs
+	tf2
+	tf2_ros
+	tf2_geometry_msgs
+)
+
 install(TARGETS
   pointcloud_filter_node
   obstacle_costmap_node
   slope_costmap_node
   terrain_segmentation_node
+  semantic_terrain_map_node
+  traversability_costmap_node
+  frontier_exploration_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

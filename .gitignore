@@ -34,3 +34,9 @@ __pycache__/
 htmlcov/
 
 src/perception_tools/perception_tools/evaluate_slope_map_against_mesh.py
+
+#Under developement
+src/perception_cpp/src/frontier_exploration_node.cpp
+src/perception_cpp/src/semantic_terrain_map_node.cpp
+src/terrain_rover_sim/config/nav2_traversability.yaml
+src/terrain_rover_sim/launch/traversability_navigation.launch.py
