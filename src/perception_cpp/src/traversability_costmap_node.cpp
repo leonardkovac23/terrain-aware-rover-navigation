@@ -15,8 +15,13 @@ class TraversabilityCostmapNode : public rclcpp::Node{
             //ROS interface
             this->declare_parameter("slope_map_topic", "/map/slope");
             this->declare_parameter("obstacle_map_topic", "/map/obstacles");
+            this->declare_parameter("semantic_map_topic", "/map/terrain_semantic");
             this->declare_parameter("map_topic", "/map/traversability");
             //Map merge policy
+            this->declare_parameter("use_semantic_terrain_map", false);
+            this->declare_parameter("slope_weight", 0.75);
+            this->declare_parameter("semantic_weight", 0.25);
+            this->declare_parameter("risk_preserve_ratio", 0.75);
             this->declare_parameter("obstacle_lethal_threshold", 95);
             this->declare_parameter("obstacle_output_cost", 100);
             this->declare_parameter("unknown_cost", -1);
@@ -34,13 +39,15 @@ class TraversabilityCostmapNode : public rclcpp::Node{
 
             const std::string slope_map_topic = this->get_parameter("slope_map_topic").as_string();
             const std::string obstacle_map_topic = this->get_parameter("obstacle_map_topic").as_string();
+            const std::string semantic_map_topic = this->get_parameter("semantic_map_topic").as_string();
             const std::string map_topic = this->get_parameter("map_topic").as_string();
+            const bool use_semantic_terrain_map = this->get_parameter("use_semantic_terrain_map").as_bool();
 
             rclcpp::QoS map_qos(rclcpp::KeepLast(1));
             map_qos.reliable();
             map_qos.transient_local();
 
-            //Subscription
+            //Subscriptions
             slope_map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
                 slope_map_topic,
                 map_qos,
@@ -51,7 +58,12 @@ class TraversabilityCostmapNode : public rclcpp::Node{
                 map_qos,
                 [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg){this->obstacleMapCallback(msg);}
             );
-
+            semantic_map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+                semantic_map_topic,
+                map_qos,
+                [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg){this->semanticMapCallback(msg);}
+            );
+            //Publisher
             map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic, map_qos);
 
             const double publish_rate = this->get_parameter("publish_rate").as_double();
@@ -65,17 +77,21 @@ class TraversabilityCostmapNode : public rclcpp::Node{
             RCLCPP_INFO(this->get_logger(), "traversability_costmap_node started.");
             RCLCPP_INFO(this->get_logger(), "Subscribing slope map: %s", slope_map_topic.c_str());
             RCLCPP_INFO(this->get_logger(), "Subscribing obstacle map: %s", obstacle_map_topic.c_str());
+            RCLCPP_INFO(this->get_logger(), "Subscribing semantic map: %s", semantic_map_topic.c_str());
+            RCLCPP_INFO(this->get_logger(), "Using semantic terrain map: %s", use_semantic_terrain_map ? "true" : "false");
             RCLCPP_INFO(this->get_logger(), "Publishing: %s", map_topic.c_str());
         }
 
     private:
         rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr slope_map_sub_;
         rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr obstacle_map_sub_;
+        rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr semantic_map_sub_;
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
         rclcpp::TimerBase::SharedPtr map_timer_;
 
         nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_slope_map_;
         nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_obstacle_map_;
+        nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_semantic_map_;
 
         void slopeMapCallback(nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg){
             latest_slope_map_ = msg;
@@ -83,6 +99,10 @@ class TraversabilityCostmapNode : public rclcpp::Node{
 
         void obstacleMapCallback(nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg){
             latest_obstacle_map_ = msg;
+        }
+
+        void semanticMapCallback(nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg){
+            latest_semantic_map_ = msg;
         }
 
         void publishMap(){
@@ -97,6 +117,12 @@ class TraversabilityCostmapNode : public rclcpp::Node{
             }
 
             const bool require_matching_geometry = this->get_parameter("require_matching_geometry").as_bool();
+            const bool use_semantic_terrain_map = this->get_parameter("use_semantic_terrain_map").as_bool();
+
+            if(use_semantic_terrain_map && !latest_semantic_map_){
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for semantic terrain map");
+                return;
+            }
 
             if(require_matching_geometry && !mapsHaveSameGeometry(*latest_slope_map_, *latest_obstacle_map_)){
                 RCLCPP_WARN_THROTTLE(
@@ -104,6 +130,16 @@ class TraversabilityCostmapNode : public rclcpp::Node{
                     *this->get_clock(),
                     2000,
                     "Slope and obstacle maps do not have matching geometry"
+                );
+                return;
+            }
+
+            if(use_semantic_terrain_map && require_matching_geometry && !mapsHaveSameGeometry(*latest_slope_map_, *latest_semantic_map_)){
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(),
+                    *this->get_clock(),
+                    2000,
+                    "Slope and semantic terrain maps do not have matching geometry"
                 );
                 return;
             }
@@ -120,9 +156,17 @@ class TraversabilityCostmapNode : public rclcpp::Node{
                 return;
             }
 
+            if(use_semantic_terrain_map && latest_semantic_map_->data.size() != map_size){
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Semantic map data size does not match");
+                return;
+            }
+
             const int obstacle_lethal_threshold = std::clamp(static_cast<int>(this->get_parameter("obstacle_lethal_threshold").as_int()),0,100);
             const int obstacle_output_cost = std::clamp(static_cast<int>(this->get_parameter("obstacle_output_cost").as_int()),0,100);
             const int unknown_cost = static_cast<int>(this->get_parameter("unknown_cost").as_int());
+            const double slope_weight = std::max(0.0, this->get_parameter("slope_weight").as_double());
+            const double semantic_weight = std::max(0.0, this->get_parameter("semantic_weight").as_double());
+            const double risk_preserve_ratio = std::clamp(this->get_parameter("risk_preserve_ratio").as_double(), 0.0, 1.0);
             const bool enable_boundary_safety = this->get_parameter("enable_boundary_safety").as_bool();
             const double boundary_min_x = this->get_parameter("boundary_min_x").as_double();
             const double boundary_max_x = this->get_parameter("boundary_max_x").as_double();
@@ -147,6 +191,8 @@ class TraversabilityCostmapNode : public rclcpp::Node{
             int unknown_cells = 0;
             int known_cells = 0;
             int boundary_cells = 0;
+            int semantic_cells = 0;
+            int semantic_raised_cells = 0;
 
             for(std::size_t index = 0; index < map_size; ++index){
                 const int cell_x = static_cast<int>(index % static_cast<std::size_t>(width_cells));
@@ -157,6 +203,11 @@ class TraversabilityCostmapNode : public rclcpp::Node{
                 
                 const int slope_cost = static_cast<int>(latest_slope_map_->data[index]);
                 const int obstacle_cost = static_cast<int>(latest_obstacle_map_->data[index]);
+                int semantic_cost = -1;
+
+                if(use_semantic_terrain_map){
+                    semantic_cost = static_cast<int>(latest_semantic_map_->data[index]);
+                }
 
                 if(enable_boundary_safety && isBoundaryCell(world_x, world_y, boundary_min_x, boundary_max_x, boundary_min_y, boundary_max_y, boundary_margin)){
                     data[index] = static_cast<int8_t>(boundary_cost);
@@ -170,16 +221,51 @@ class TraversabilityCostmapNode : public rclcpp::Node{
                     continue;
                 }
 
-                if(slope_cost < 0){
+                if(slope_cost < 0 && semantic_cost < 0){
                     data[index] = static_cast<int8_t>(unknown_cost);
                     unknown_cells++;
                     continue;
                 }
 
-                const int final_cost = std::max(
-                    std::clamp(slope_cost, 0, 100),
-                    std::clamp(obstacle_cost, 0, 100)
-                );
+                int final_cost = 0;
+                const bool has_slope_cost = slope_cost >= 0;
+                const bool has_obstacle_cost = obstacle_cost >= 0;
+                const bool has_semantic_cost = semantic_cost >= 0;
+
+                if(has_obstacle_cost){
+                    final_cost = std::max(final_cost, std::clamp(obstacle_cost, 0, 100));
+                }
+
+                const int cost_without_semantic = final_cost;
+
+                if(has_slope_cost && has_semantic_cost){
+                    const int terrain_cost = combineSlopeAndSemanticCost(
+                        std::clamp(slope_cost, 0, 100),
+                        std::clamp(semantic_cost, 0, 100),
+                        slope_weight,
+                        semantic_weight,
+                        risk_preserve_ratio
+                    );
+
+                    final_cost = std::max(final_cost, terrain_cost);
+                    semantic_cells++;
+
+                    if(final_cost > std::max(cost_without_semantic, std::clamp(slope_cost, 0, 100))){
+                        semantic_raised_cells++;
+                    }
+                }
+                else if(has_slope_cost){
+                    final_cost = std::max(final_cost, std::clamp(slope_cost, 0, 100));
+                }
+                else if(has_semantic_cost){
+                    const int clamped_semantic_cost = std::clamp(semantic_cost, 0, 100);
+                    final_cost = std::max(final_cost, clamped_semantic_cost);
+                    semantic_cells++;
+
+                    if(final_cost > cost_without_semantic){
+                        semantic_raised_cells++;
+                    }
+                }
 
                 data[index] = static_cast<int8_t>(final_cost);
                 known_cells++;
@@ -196,11 +282,13 @@ class TraversabilityCostmapNode : public rclcpp::Node{
                 this->get_logger(),
                 *this->get_clock(),
                 2000,
-                "Published traversability map | known: %d | unknown: %d | obstacles: %d | boundary: %d | map: %ux%u",
+                "Published traversability map | known: %d | unknown: %d | obstacles: %d | boundary: %d | semantic used: %d | semantic raised: %d | map: %ux%u",
                 known_cells,
                 unknown_cells,
                 obstacle_cells,
                 boundary_cells,
+                semantic_cells,
+                semantic_raised_cells,
                 msg.info.width,
                 msg.info.height
             );
@@ -218,6 +306,25 @@ class TraversabilityCostmapNode : public rclcpp::Node{
             if(std::abs(first.info.origin.position.y - second.info.origin.position.y) > position_epsilon) return false;
 
             return true;
+        }
+
+        int combineSlopeAndSemanticCost(int slope_cost, int semantic_cost, double slope_weight, double semantic_weight, double risk_preserve_ratio){
+            const double weight_sum = slope_weight + semantic_weight;
+            const int max_risk = std::max(slope_cost, semantic_cost);
+            int weighted_cost = max_risk;
+
+            if(weight_sum > 1e-9){
+                const double weighted = (slope_weight * static_cast<double>(slope_cost) +
+                    semantic_weight * static_cast<double>(semantic_cost)
+                ) / weight_sum;
+
+                weighted_cost = static_cast<int>(std::lround(weighted));
+            }
+
+            const int risk_floor = static_cast<int>(std::lround(static_cast<double>(max_risk) * risk_preserve_ratio));
+            const int final_cost = std::max(weighted_cost, risk_floor);
+
+            return std::clamp(final_cost, 0, 100);
         }
 
         bool isBoundaryCell(double world_x, double world_y, double min_x, double max_x, double min_y, double max_y, double margin){
