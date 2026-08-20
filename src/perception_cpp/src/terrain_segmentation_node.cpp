@@ -26,7 +26,7 @@ class TerrainSegmentationNode : public rclcpp::Node{
             this->declare_parameter("color_mask_topic", "/terrain_segmentation/color_mask");
             this->declare_parameter("overlay_topic", "/terrain_segmentation/overlay");
             //ONNX model input setup
-            this->declare_parameter("model_path", "models/terrain_segmentation/ddrnet_39.onnx");
+            this->declare_parameter("model_path", "dataset/models_onnx/terrain_segmentation/ddrnet_39.onnx");
             this->declare_parameter("input_size", 256);
             this->declare_parameter("num_classes", 5);
             //Runtime behavior and visualization output

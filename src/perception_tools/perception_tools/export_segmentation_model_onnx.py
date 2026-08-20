@@ -21,7 +21,7 @@ def parse_args():
     )
     parser.add_argument(
         "--output",
-        default="models/terrain_segmentation/ddrnet_39.onnx",
+        default="dataset/models_onnx/terrain_segmentation/ddrnet_39.onnx",
         help="Output ONNX model path.",
     )
     parser.add_argument(
